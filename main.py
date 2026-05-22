@@ -1,34 +1,44 @@
 def extract_video_info(url: str) -> Dict:
     """Extract video information using yt-dlp"""
-    # تم تحديث الخيارات بالكامل بإضافة الـ User-Agent وإعدادات التخفي لتخطي الحجب
+    # تم تحديث الخيارات وتطوير آليات التخفي لتفادي حظر يوتيوب الصارم
     ydl_opts = {
         'format': 'best',
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
         'nocheckcertificate': True,
-        'ignoreerrors': True,
+        'ignoreerrors': False,  # نغيرها إلى False لكي نلتقط الخطأ الفعلي ولا نترك الكود يكمل ببيانات فارغة
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web'],
+                'player_client': ['android', 'ios'],  # التركيز على مشغلات الجوال لأن حمايتها أخف
                 'skip': ['webpage']
             }
         },
-        # أسطر التخفي السحرية لمنع السيرفر من الظهور كبوت:
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache',
         }
     }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            try:
+                info = ydl.extract_info(url, download=False)
+            except Exception as extract_error:
+                # محاولة أخيرة بمشغل مختلف إذا فشلت الأولى
+                print(f"First attempt failed: {str(extract_error)}. Trying fallback client...")
+                ydl_opts['extractor_args']['youtube']['player_client'] = ['web']
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
+                    info = ydl_fallback.extract_info(url, download=False)
             
-            # التأكد من أن يوتيوب أعطانا معلومات كاملة ولم يحجب الطلب داخلياً
-            if not info:
-                raise Exception("YouTube blocked the request or returned empty data. Try again.")
+            # التأكد بشكل صارم أن يوتيوب أرجع بيانات وليس قيم فارغة
+            if info is None:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="يوتيوب يطلب تسجيل الدخول حالياً لتأكيد أنك لست روبوت. يرجى تجربة رابط فيديو آخر أو المحاولة لاحقاً."
+                )
                 
             # Extract basic info
             title = info.get('title', 'Unknown Title')
@@ -38,7 +48,6 @@ def extract_video_info(url: str) -> Dict:
             # Extract audio options
             audio_options = []
             if 'formats' in info:
-                # Get unique audio formats
                 audio_formats = [f for f in info['formats'] if f.get('acodec') != 'none']
                 seen_qualities = set()
                 
@@ -46,7 +55,6 @@ def extract_video_info(url: str) -> Dict:
                     abr = fmt.get('abr', 0)
                     ext = fmt.get('ext', 'mp3')
                     
-                    # Create quality label
                     if abr:
                         quality_label = f"{int(abr)}kbps {ext.upper()}"
                     else:
@@ -55,10 +63,7 @@ def extract_video_info(url: str) -> Dict:
                     if quality_label not in seen_qualities:
                         seen_qualities.add(quality_label)
                         filesize = fmt.get('filesize', 0)
-                        if filesize:
-                            size_str = format_filesize(filesize)
-                        else:
-                            size_str = "Unknown size"
+                        size_str = format_filesize(filesize) if filesize else "Unknown size"
                         
                         audio_options.append(StreamOption(
                             quality=quality_label,
@@ -69,10 +74,7 @@ def extract_video_info(url: str) -> Dict:
             # Extract video options
             video_options = []
             if 'formats' in info:
-                # Get video formats with specific resolutions
                 video_formats = [f for f in info['formats'] if f.get('vcodec') != 'none' and f.get('acodec') != 'none']
-                
-                # Prioritize common resolutions
                 target_resolutions = ['1080p', '720p', '480p', '360p', '240p']
                 seen_resolutions = set()
                 
@@ -85,10 +87,7 @@ def extract_video_info(url: str) -> Dict:
                                 seen_resolutions.add(res_label)
                                 ext = fmt.get('ext', 'mp4')
                                 filesize = fmt.get('filesize', 0)
-                                if filesize:
-                                    size_str = format_filesize(filesize)
-                                else:
-                                    size_str = "Unknown size"
+                                size_str = format_filesize(filesize) if filesize else "Unknown size"
                                 
                                 video_options.append(StreamOption(
                                     quality=f"{res_label} {ext.upper()}",
@@ -97,23 +96,16 @@ def extract_video_info(url: str) -> Dict:
                                 ))
                                 break
                 
-                # If no specific resolutions found, add available ones
                 if not video_options:
-                    for fmt in video_formats[:5]:  # Limit to first 5
+                    for fmt in video_formats[:5]:
                         height = fmt.get('height', 0)
                         ext = fmt.get('ext', 'mp4')
-                        if height:
-                            quality_label = f"{height}p {ext.upper()}"
-                        else:
-                            quality_label = f"Video {ext.upper()}"
+                        quality_label = f"{height}p {ext.upper()}" if height else f"Video {ext.upper()}"
                         
                         if quality_label not in seen_resolutions:
                             seen_resolutions.add(quality_label)
                             filesize = fmt.get('filesize', 0)
-                            if filesize:
-                                size_str = format_filesize(filesize)
-                            else:
-                                size_str = "Unknown size"
+                            size_str = format_filesize(filesize) if filesize else "Unknown size"
                             
                             video_options.append(StreamOption(
                                 quality=quality_label,
@@ -129,7 +121,9 @@ def extract_video_info(url: str) -> Dict:
                 'video_options': [opt.model_dump() for opt in video_options]
             }
             
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
         print("Error during extraction:")
         traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"فشل استخراج بيانات الفيديو: {str(e)}")
