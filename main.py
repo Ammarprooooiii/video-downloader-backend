@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
 from typing import List, Dict, Optional
+import traceback  # لإظهار الخطأ بالتفصيل في الـ Logs
 
 app = FastAPI(title="Snaptube Backend API")
 
@@ -158,15 +159,18 @@ def extract_video_info(url: str) -> Dict:
                                 size=size_str
                             ))
             
+            # تم تعديل .dict() هنا لتصبح .model_dump() لتتوافق مع الإصدار الجديد
             return {
                 'title': title,
                 'thumbnail': thumbnail,
                 'duration': duration,
-                'audio_options': [opt.dict() for opt in audio_options],
-                'video_options': [opt.dict() for opt in video_options]
+                'audio_options': [opt.model_dump() for opt in audio_options],
+                'video_options': [opt.model_dump() for opt in video_options]
             }
     
     except Exception as e:
+        print("Error during extraction:")
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -174,9 +178,12 @@ def extract_video_info(url: str) -> Dict:
 async def extract_video(request: ExtractRequest):
     """Extract video information from a URL"""
     try:
+        print(f"Received extraction request for URL: {request.url}")
         video_info = extract_video_info(request.url)
         return VideoInfo(**video_info)
     except Exception as e:
+        print("Exception in /api/extract:")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to extract video info: {str(e)}")
 
 
