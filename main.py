@@ -1,16 +1,67 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import yt_dlp
+from typing import List, Dict, Optional
+import traceback
+
+# تعريف التطبيق الأساسي (تأكد من وجود هذا السطر)
+app = FastAPI(title="Snaptube Backend API")
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class ExtractRequest(BaseModel):
+    url: str
+
+class StreamOption(BaseModel):
+    quality: str
+    url: str
+    size: str
+
+class VideoInfo(BaseModel):
+    title: str
+    thumbnail: str
+    duration: str
+    audio_options: List[StreamOption]
+    video_options: List[StreamOption]
+
+def format_duration(seconds: int) -> str:
+    """Format duration in seconds to MM:SS or HH:MM:SS"""
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+def format_filesize(bytes: int) -> str:
+    """Format file size in bytes to human readable format"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if bytes < 1024.0:
+            return f"{bytes:.2f} {unit}"
+        bytes /= 1024.0
+    return f"{bytes:.2f} TB"
+
 def extract_video_info(url: str) -> Dict:
     """Extract video information using yt-dlp"""
-    # تم تحديث الخيارات وتطوير آليات التخفي لتفادي حظر يوتيوب الصارم
     ydl_opts = {
         'format': 'best',
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
         'nocheckcertificate': True,
-        'ignoreerrors': False,  # نغيرها إلى False لكي نلتقط الخطأ الفعلي ولا نترك الكود يكمل ببيانات فارغة
+        'ignoreerrors': False,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios'],  # التركيز على مشغلات الجوال لأن حمايتها أخف
+                'player_client': ['android', 'ios'],
                 'skip': ['webpage']
             }
         },
@@ -27,25 +78,21 @@ def extract_video_info(url: str) -> Dict:
             try:
                 info = ydl.extract_info(url, download=False)
             except Exception as extract_error:
-                # محاولة أخيرة بمشغل مختلف إذا فشلت الأولى
                 print(f"First attempt failed: {str(extract_error)}. Trying fallback client...")
                 ydl_opts['extractor_args']['youtube']['player_client'] = ['web']
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
                     info = ydl_fallback.extract_info(url, download=False)
             
-            # التأكد بشكل صارم أن يوتيوب أرجع بيانات وليس قيم فارغة
             if info is None:
                 raise HTTPException(
                     status_code=400, 
-                    detail="يوتيوب يطلب تسجيل الدخول حالياً لتأكيد أنك لست روبوت. يرجى تجربة رابط فيديو آخر أو المحاولة لاحقاً."
+                    detail="يوتيوب حجب الطلب حالياً. يرجى تجربة فيديو آخر أو المحاولة لاحقاً."
                 )
                 
-            # Extract basic info
             title = info.get('title', 'Unknown Title')
             thumbnail = info.get('thumbnail', '')
             duration = format_duration(info.get('duration', 0))
             
-            # Extract audio options
             audio_options = []
             if 'formats' in info:
                 audio_formats = [f for f in info['formats'] if f.get('acodec') != 'none']
@@ -71,7 +118,6 @@ def extract_video_info(url: str) -> Dict:
                             size=size_str
                         ))
             
-            # Extract video options
             video_options = []
             if 'formats' in info:
                 video_formats = [f for f in info['formats'] if f.get('vcodec') != 'none' and f.get('acodec') != 'none']
@@ -127,3 +173,37 @@ def extract_video_info(url: str) -> Dict:
         print("Error during extraction:")
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"فشل استخراج بيانات الفيديو: {str(e)}")
+
+@app.post("/api/extract", response_model=VideoInfo)
+async def extract_video(request: ExtractRequest):
+    """Extract video information from a URL"""
+    try:
+        print(f"Received extraction request for URL: {request.url}")
+        video_info = extract_video_info(request.url)
+        return VideoInfo(**video_info)
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        print("Exception in /api/extract:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to extract video info: {str(e)}")
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "message": "Snaptube Backend API",
+        "version": "1.0.0",
+        "endpoints": {
+            "extract": "/api/extract (POST)"
+        }
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
