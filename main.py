@@ -57,11 +57,20 @@ def format_filesize(bytes: int) -> str:
 
 def extract_video_info(url: str) -> Dict:
     """Extract video information using yt-dlp"""
+    # تم تحديث الخيارات هنا لتخطي حجب يوتيوب الذكي للسيرفرات
     ydl_opts = {
         'format': 'best',
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
+        'nocheckcertificate': True,
+        'ignoreerrors': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'skip': ['webpage']
+            }
+        }
     }
     
     try:
@@ -159,7 +168,6 @@ def extract_video_info(url: str) -> Dict:
                                 size=size_str
                             ))
             
-            # تم تعديل .dict() هنا لتصبح .model_dump() لتتوافق مع الإصدار الجديد
             return {
                 'title': title,
                 'thumbnail': thumbnail,
@@ -167,7 +175,7 @@ def extract_video_info(url: str) -> Dict:
                 'audio_options': [opt.model_dump() for opt in audio_options],
                 'video_options': [opt.model_dump() for opt in video_options]
             }
-    
+            
     except Exception as e:
         print("Error during extraction:")
         traceback.print_exc()
