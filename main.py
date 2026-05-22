@@ -1,63 +1,6 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import yt_dlp
-from typing import List, Dict, Optional
-import traceback  # لإظهار الخطأ بالتفصيل في الـ Logs
-
-app = FastAPI(title="Snaptube Backend API")
-
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-class ExtractRequest(BaseModel):
-    url: str
-
-
-class StreamOption(BaseModel):
-    quality: str
-    url: str
-    size: str
-
-
-class VideoInfo(BaseModel):
-    title: str
-    thumbnail: str
-    duration: str
-    audio_options: List[StreamOption]
-    video_options: List[StreamOption]
-
-
-def format_duration(seconds: int) -> str:
-    """Format duration in seconds to MM:SS or HH:MM:SS"""
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
-
-
-def format_filesize(bytes: int) -> str:
-    """Format file size in bytes to human readable format"""
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if bytes < 1024.0:
-            return f"{bytes:.2f} {unit}"
-        bytes /= 1024.0
-    return f"{bytes:.2f} TB"
-
-
 def extract_video_info(url: str) -> Dict:
     """Extract video information using yt-dlp"""
-    # تم تحديث الخيارات هنا لتخطي حجب يوتيوب الذكي للسيرفرات
+    # تم تحديث الخيارات بالكامل بإضافة الـ User-Agent وإعدادات التخفي لتخطي الحجب
     ydl_opts = {
         'format': 'best',
         'quiet': True,
@@ -70,6 +13,12 @@ def extract_video_info(url: str) -> Dict:
                 'player_client': ['android', 'web'],
                 'skip': ['webpage']
             }
+        },
+        # أسطر التخفي السحرية لمنع السيرفر من الظهور كبوت:
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
         }
     }
     
@@ -77,6 +26,10 @@ def extract_video_info(url: str) -> Dict:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
+            # التأكد من أن يوتيوب أعطانا معلومات كاملة ولم يحجب الطلب داخلياً
+            if not info:
+                raise Exception("YouTube blocked the request or returned empty data. Try again.")
+                
             # Extract basic info
             title = info.get('title', 'Unknown Title')
             thumbnail = info.get('thumbnail', '')
@@ -180,39 +133,3 @@ def extract_video_info(url: str) -> Dict:
         print("Error during extraction:")
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/extract", response_model=VideoInfo)
-async def extract_video(request: ExtractRequest):
-    """Extract video information from a URL"""
-    try:
-        print(f"Received extraction request for URL: {request.url}")
-        video_info = extract_video_info(request.url)
-        return VideoInfo(**video_info)
-    except Exception as e:
-        print("Exception in /api/extract:")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to extract video info: {str(e)}")
-
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "Snaptube Backend API",
-        "version": "1.0.0",
-        "endpoints": {
-            "extract": "/api/extract (POST)"
-        }
-    }
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
